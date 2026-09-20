@@ -112,12 +112,18 @@ reads 1000/1500/2000, the old one reads 988/1500/2012.
 
 ## Scripts
 
-| Script | What it does |
-|---|---|
-| `example_control_loop.py` | Closed-loop example using the library |
-| `verify_channel_scale.py` | Check tick↔us against the Receiver tab |
-| `crsf_test.py` | Original CRSF reference (unchanged, still works) |
-| `wifi_telem.py` | MAVLink telemetry over WiFi |
-| `legacy/` | Abandoned RC-over-MAVLink attempts; see MAVLINK.md |
+Full usage for each is in [scripts/README.md](scripts/README.md), which
+also gives the bring-up order to work through on a new airframe.
+
+| Script | What it does | Arms? |
+|---|---|---|
+| `crsf_test.py` | Original CRSF reference: link + telemetry check | no |
+| `verify_channel_scale.py` | Check tick↔us against the Receiver tab | no |
+| `arm_test.py` | First-light arm/disarm check at zero throttle | yes |
+| `hover_keyboard.py` | Fly manually from the keyboard (throttle + roll) | yes |
+| `example_control_loop.py` | Closed-loop example using the library | yes |
+| `disarm.py` | Panic button: force disarm and hold it | no |
+| `wifi_telem.py` | MAVLink telemetry over WiFi (read-only) | no |
+| `legacy/` | Abandoned RC-over-MAVLink attempts; see MAVLINK.md | — |
 
 Deferred work is tracked in [IMPROVEMENTS.md](IMPROVEMENTS.md).

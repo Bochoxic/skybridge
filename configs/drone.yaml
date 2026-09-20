@@ -40,8 +40,8 @@ betaflight:
 # (>= start && < end), so the bridge targets the centre of each range.
 modes:
   arm:   {aux: 1, range: [1700, 2100]}
-  angle: {aux: 2, range: [1300, 1700]}
-  acro:  {aux: 2, range: [900, 1300]}
+  angle: {aux: 2, range: [1000, 1300]}
+  acro:  {aux: 2, range: [1400, 2000]}
 
 safety:
   command_timeout: 0.2  # seconds without a command -> immediate disarm
