@@ -1,0 +1,50 @@
+# Skybridge drone configuration.
+#
+# These values MUST match the flight controller's actual Betaflight
+# settings. If they drift, commands are silently wrong -- the drone gives
+# no error signal. Check with `diff all` in the BF CLI.
+
+serial:
+  port: /dev/ttyUSB0
+  baud: 115200          # NOT 420000 on the USB-UART path; see MAVLINK.md
+  rc_hz: 50
+
+channels:               # zero-indexed positions in the CRSF frame
+  roll: 0
+  pitch: 1
+  throttle: 2
+  yaw: 3
+
+betaflight:
+  angle_limit: 20       # `set angle_limit` -- degrees, BF range 10..80
+                        # verified against the FC CLI, 2026-09-20
+
+  rates:
+    type: actual        # `set rates_type = ACTUAL`
+
+    # Angle mode routes stick input through the ACRO rate curve, so the
+    # stick->angle map is only linear when rc_rate == srate. Keeping them
+    # equal makes set_angle() exact; expo then has no effect at all.
+    #
+    # Use 67, not 7: both are linear, but 7 would cap acro at 70 deg/s
+    # whereas 67 preserves the full 670 deg/s.
+    rc_rate: {roll: 67, pitch: 67, yaw: 67}
+    srate:   {roll: 67, pitch: 67, yaw: 67}
+    expo:    {roll: 0,  pitch: 0,  yaw: 0}
+
+  deadband: 0
+  yaw_deadband: 0
+  min_check: 1050       # arming requires throttle below this
+
+# Mirrors Betaflight `aux` entries. BF's activation test is half-open
+# (>= start && < end), so the bridge targets the centre of each range.
+modes:
+  arm:   {aux: 1, range: [1700, 2100]}
+  angle: {aux: 2, range: [1300, 1700]}
+  acro:  {aux: 2, range: [900, 1300]}
+
+safety:
+  command_timeout: 0.2  # seconds without a command -> immediate disarm
+  max_angle: 15         # library-side clamp, kept below angle_limit (20)
+                        # so a runaway controller cannot saturate the FC
+  max_rate: 200         # deg/s clamp for acro and yaw

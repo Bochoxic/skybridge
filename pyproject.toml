@@ -1,7 +1,26 @@
 [project]
 name = "skybridge"
 version = "0.1.0"
-description = "Add your description here"
+description = "Control a drone over ExpressLRS from Python"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pymavlink>=2.4.49",
+    "pyserial>=3.5",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/skybridge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
