@@ -5,9 +5,14 @@ description = "Control a drone over ExpressLRS from Python"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "numpy>=2.5.4",
+    "opencv-python-headless>=5.0.0.93",
     "pymavlink>=2.4.49",
+    "pyrealsense2>=2.59.1.11053",
     "pyserial>=3.5",
     "pyyaml>=6.0",
+    "rerun-sdk>=0.41.0",
+    "scikit-learn>=1.9.1",
 ]
 
 [project.optional-dependencies]
