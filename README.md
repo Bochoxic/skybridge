@@ -40,11 +40,13 @@ src/skybridge/
   state.py        telemetry snapshot with per-field staleness
   transport.py    serial, plus a loopback for tests
   bridge.py       the Bridge class
-  optitrack/  perception/  control/     (placeholders)
+  optitrack/      RealSense recording + offline drone detection/tracking
+                  (see src/skybridge/optitrack/README.md)
+  perception/  control/     (placeholders)
 
 configs/drone.yaml    must mirror your Betaflight settings
 scripts/              runnable scripts, incl. the original references
-tests/                57 tests, no hardware needed
+tests/                68 tests, no hardware needed
 ```
 
 ## Setup
