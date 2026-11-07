@@ -40,13 +40,16 @@ src/skybridge/
   state.py        telemetry snapshot with per-field staleness
   transport.py    serial, plus a loopback for tests
   bridge.py       the Bridge class
+  bus.py          pub/sub hub: rc/input, rc/sent, telemetry/* (recording hook)
+  rc/             physical radio over USB (EdgeTX joystick) -> CRSF ticks
+  passthrough.py  radio -> guards -> Bridge, to fly from the radio via the laptop
   optitrack/      RealSense recording + offline drone detection/tracking
                   (see src/skybridge/optitrack/README.md)
   perception/  control/     (placeholders)
 
 configs/drone.yaml    must mirror your Betaflight settings
 scripts/              runnable scripts, incl. the original references
-tests/                68 tests, no hardware needed
+tests/                no hardware needed
 ```
 
 ## Setup
@@ -124,6 +127,8 @@ also gives the bring-up order to work through on a new airframe.
 | `arm_test.py` | First-light arm/disarm check at zero throttle | yes |
 | `hover_keyboard.py` | Fly manually from the keyboard (throttle + roll) | yes |
 | `example_control_loop.py` | Closed-loop example using the library | yes |
+| `rc_probe.py` | Show the USB radio's channels and active modes | no |
+| `rc_fly.py` | Fly from the radio through the laptop (raw passthrough + guards) | yes |
 | `disarm.py` | Panic button: force disarm and hold it | no |
 | `wifi_telem.py` | MAVLink telemetry over WiFi (read-only) | no |
 | `legacy/` | Abandoned RC-over-MAVLink attempts; see MAVLINK.md | — |

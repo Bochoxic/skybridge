@@ -2,6 +2,35 @@
 
 Deferred work, roughly in order of value.
 
+## Recording on the Bus
+
+`skybridge.bus.Bus` already carries `rc/input`, `rc/sent` and
+`telemetry/*`, all stamped with `time.monotonic()`. A recorder subscribes
+(prefix `""` for everything) and pushes onto a queue drained by its own
+thread. Subscribers run on the RC thread, so they must never touch disk
+directly. Write to Rerun (to match `optitrack/`) and/or CSV.
+
+To put RealSense depth on the same timeline, have `realsense_record.py`
+publish `camera/*` on the same bus, and record one wall-clock/monotonic
+pair at start so that `wall_time` lines up.
+
+## RC / autonomy mux
+
+`Bridge.set_channels` (raw passthrough) and the physical setters already
+take over from each other. A mux layer would choose the source from a
+radio switch, e.g. CH7 high = autonomy, with the radio always able to take
+back control and the arm switch kept on the radio in both modes.
+
+## Radio liveness and reconnect
+
+joydev only reports changes, so a frozen radio that is still plugged in
+looks the same as a quiet one. Only an unplug is detected. Reading the
+HID reports (`/dev/hidraw*`, sent continuously, but root-only by default
+and needing a udev rule) would give real liveness. After an unplug the
+passthrough stops for good. Reconnecting would need the arm interlock
+reset, so that the switch has to be seen OFF again.
+
+
 ## Betaflight CLI dump parser
 
 **Why it matters:** `configs/drone.yaml` has to mirror the flight
