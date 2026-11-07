@@ -79,6 +79,21 @@ class ModeConfig:
         lo, hi = self.range_us
         return (lo + hi) / 2.0
 
+    @property
+    def channel(self) -> int:
+        """Zero-indexed CRSF channel carrying this mode's aux."""
+        return aux_channel(self.aux)
+
+    def is_active(self, us: float) -> bool:
+        """Betaflight's half-open activation test."""
+        lo, hi = self.range_us
+        return lo <= us < hi
+
+
+def aux_channel(aux: int) -> int:
+    """AUX1 is channel 5 (index 4) in the standard AETR layout."""
+    return 3 + aux
+
 
 @dataclass(frozen=True)
 class ChannelMap:
@@ -96,12 +111,39 @@ class SafetyConfig:
 
 
 @dataclass(frozen=True)
+class AxisMap:
+    """Which joystick axis feeds a CRSF channel."""
+
+    axis: int
+    invert: bool = False
+
+
+def _default_rc_mapping() -> dict[int, AxisMap]:
+    # EdgeTX "classic" joystick: mixer CH1..CH7 -> axes 0..6.
+    return {ch: AxisMap(axis=ch) for ch in range(7)}
+
+
+@dataclass(frozen=True)
+class RcConfig:
+    """A physical radio read over USB, for RC passthrough.
+
+    ``mapping`` is keyed by zero-indexed CRSF channel; in YAML it is
+    written ``ch1``..``ch16`` to match the radio's own channel labels.
+    """
+
+    device: str = "/dev/input/js0"
+    max_throttle: float = 1.0
+    mapping: dict[int, AxisMap] = field(default_factory=_default_rc_mapping)
+
+
+@dataclass(frozen=True)
 class DroneConfig:
     serial: SerialConfig = field(default_factory=SerialConfig)
     channels: ChannelMap = field(default_factory=ChannelMap)
     betaflight: BetaflightConfig = field(default_factory=BetaflightConfig)
     modes: dict[str, ModeConfig] = field(default_factory=dict)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
+    rc: RcConfig = field(default_factory=RcConfig)
 
     # ── Loading ───────────────────────────────────────────────────────────────
     @classmethod
@@ -119,6 +161,7 @@ class DroneConfig:
             betaflight=_parse_betaflight(raw.get("betaflight", {})),
             modes=_parse_modes(raw.get("modes", {})),
             safety=SafetyConfig(**raw.get("safety", {})),
+            rc=_parse_rc(raw.get("rc", {})),
         )
         cfg.validate()
         return cfg
@@ -168,6 +211,22 @@ class DroneConfig:
             if mode.aux < 1:
                 raise ConfigError(f"mode {name!r}: aux must be >= 1")
 
+        rc = self.rc
+        if not 0.0 < rc.max_throttle <= 1.0:
+            raise ConfigError(f"rc.max_throttle {rc.max_throttle} must be in (0, 1]")
+        for ch, entry in rc.mapping.items():
+            if not 0 <= ch < 16:
+                raise ConfigError(f"rc.mapping: channel {ch + 1} outside ch1..ch16")
+            if entry.axis < 0:
+                raise ConfigError(f"rc.mapping ch{ch + 1}: axis must be >= 0")
+        # Passthrough without the arm channel would leave the drone
+        # unarmable at best -- and a mapping typo is the likely cause.
+        if "arm" in self.modes and self.modes["arm"].channel not in rc.mapping:
+            raise ConfigError(
+                f"rc.mapping does not map the arm channel "
+                f"(ch{self.modes['arm'].channel + 1})"
+            )
+
     def mode(self, name: str) -> ModeConfig:
         try:
             return self.modes[name]
@@ -209,6 +268,31 @@ def _per_axis(rates: dict, key: str, axis: str, default: float) -> float:
     if isinstance(value, dict):
         return value.get(axis, default)
     return value
+
+
+def _parse_rc(raw: dict) -> RcConfig:
+    known = {"device", "max_throttle", "mapping"}
+    if unknown := set(raw) - known:
+        raise ConfigError(f"unknown rc keys: {sorted(unknown)}")
+
+    kwargs: dict = {k: raw[k] for k in ("device", "max_throttle") if k in raw}
+    if "mapping" in raw:
+        mapping = {}
+        for key, spec in raw["mapping"].items():
+            key_s = str(key).lower()
+            if not (key_s.startswith("ch") and key_s[2:].isdigit()):
+                raise ConfigError(f"rc.mapping: key {key!r} must be ch1..ch16")
+            if isinstance(spec, int):
+                spec = {"axis": spec}
+            try:
+                entry = AxisMap(axis=int(spec["axis"]), invert=bool(spec.get("invert", False)))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ConfigError(
+                    f"rc.mapping {key}: expected an axis number or {{axis: N, invert: bool}}"
+                ) from exc
+            mapping[int(key_s[2:]) - 1] = entry
+        kwargs["mapping"] = mapping
+    return RcConfig(**kwargs)
 
 
 def _parse_modes(raw: dict) -> dict[str, ModeConfig]:

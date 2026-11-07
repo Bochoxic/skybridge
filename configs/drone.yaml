@@ -40,7 +40,7 @@ betaflight:
 # (>= start && < end), so the bridge targets the centre of each range.
 modes:
   arm:   {aux: 1, range: [1700, 2100]}
-  angle: {aux: 2, range: [1000, 1300]}
+  angle: {aux: 2, range: [900, 1300]}    # 900, not 1000: EdgeTX -100% is 988us
   acro:  {aux: 2, range: [1400, 2000]}
 
 safety:
@@ -48,3 +48,19 @@ safety:
   max_angle: 15         # library-side clamp, kept below angle_limit (20)
                         # so a runaway controller cannot saturate the FC
   max_rate: 200         # deg/s clamp for acro and yaw
+
+# Physical radio over USB, for RC passthrough (scripts/rc_fly.py).
+# RadioMaster Boxer in EdgeTX "USB Joystick" mode: mixer CH1..CH7 appear as
+# joystick axes 0..6 at full scale (+/-100% = 988..2012us), probed 2026-11-07.
+# Keys are the radio's channel labels (ch1 = CRSF channel 1).
+rc:
+  device: /dev/input/js0
+  max_throttle: 1.0     # passthrough throttle scale; rc_fly.py --max-throttle overrides
+  mapping:
+    ch1: {axis: 0}      # roll      (A)
+    ch2: {axis: 1}      # pitch     (E)
+    ch3: {axis: 2}      # throttle  (T)
+    ch4: {axis: 3}      # yaw       (R)
+    ch5: {axis: 4}      # AUX1 arm
+    ch6: {axis: 5}      # AUX2 angle / acro
+    ch7: {axis: 6}      # AUX3 (3-position switch)
