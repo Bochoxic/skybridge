@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 
 from . import units
-from .config import DroneConfig
+from .bus import Bus
+from .config import DroneConfig, aux_channel
 from .crsf.constants import CH_MIN, NUM_CHANNELS
 from .crsf.decoders import DECODERS
 from .crsf.protocol import parse_frames, rc_frame
@@ -67,6 +68,9 @@ class Command:
     armed: bool = False
     mode: str | None = None
     aux_us: tuple[tuple[int, float], ...] = ()
+    # Raw passthrough: when set, these 16 ticks are sent verbatim and every
+    # field above is ignored. Any physical-unit setter clears it.
+    raw: tuple[int, ...] | None = None
 
 
 class Bridge:
@@ -87,9 +91,11 @@ class Bridge:
         *,
         clock: Callable[[], float] = time.monotonic,
         auto_start: bool = False,
+        bus: Bus | None = None,
     ) -> None:
         self.config = config
         self._clock = clock
+        self._bus = bus
         self._transport = transport or SerialTransport(
             config.serial.port, config.serial.baud
         )
@@ -147,6 +153,8 @@ class Bridge:
 
     # ── Commands ──────────────────────────────────────────────────────────────
     def _update(self, **changes: object) -> None:
+        # A physical-unit command takes over from raw passthrough.
+        changes.setdefault("raw", None)
         with self._lock:
             self._command = replace(self._command, **changes)
             self._last_command_at = self._clock()
@@ -215,6 +223,17 @@ class Bridge:
         self.config.mode(name)  # raises if unknown
         self._update(mode=name)
 
+    def set_channels(self, ticks: Sequence[int]) -> None:
+        """Send 16 raw CRSF ticks verbatim (RC passthrough).
+
+        No unit conversion, mode check or arm guard happens here -- the
+        caller (e.g. :class:`skybridge.passthrough.RcPassthrough`) owns
+        safety. The stale-command watchdog still applies.
+        """
+        if len(ticks) != NUM_CHANNELS:
+            raise ValueError(f"expected {NUM_CHANNELS} channels, got {len(ticks)}")
+        self._update(raw=tuple(units.clamp_tick(t) for t in ticks))
+
     def set_aux(self, aux: int, value_us: float) -> None:
         """Set an aux channel directly, for anything not in the config."""
         with self._lock:
@@ -222,7 +241,7 @@ class Bridge:
                 (a, v) for a, v in self._command.aux_us if a != aux
             )
             self._command = replace(
-                self._command, aux_us=others + ((aux, value_us),)
+                self._command, aux_us=others + ((aux, value_us),), raw=None
             )
             self._last_command_at = self._clock()
             self._command_seen = True
@@ -299,10 +318,19 @@ class Bridge:
                 self._command = command
                 self._failsafe_active = True
 
-        self._transport.write(self._build_frame(command))
+        channels = self._build_channels(command)
+        self._transport.write(rc_frame(channels))
+        if self._bus is not None:
+            self._bus.publish("rc/sent", tuple(channels), now)
         self._read_telemetry(now)
 
     def _build_frame(self, command: Command) -> bytes:
+        return rc_frame(self._build_channels(command))
+
+    def _build_channels(self, command: Command) -> list[int]:
+        if command.raw is not None:
+            return list(command.raw)
+
         ch = [units.deflection_to_tick(0.0)] * NUM_CHANNELS
         cmap = self.config.channels
 
@@ -331,7 +359,7 @@ class Bridge:
         for aux, value_us in command.aux_us:
             ch[_aux_index(aux)] = units.us_to_tick(value_us)
 
-        return rc_frame(ch)
+        return ch
 
     def _read_telemetry(self, now: float) -> None:
         data = self._transport.read_available()
@@ -350,6 +378,8 @@ class Bridge:
             values = decode(payload)
             if not values:
                 continue
+            if self._bus is not None:
+                self._bus.publish(f"telemetry/{name.lower()}", values, now)
 
             if name == "ATTITUDE":
                 self._att_count += 1
@@ -433,6 +463,4 @@ def _clamp(value: float, limit: float) -> float:
     return max(-limit, min(limit, value))
 
 
-def _aux_index(aux: int) -> int:
-    """AUX1 is channel 5 (index 4) in the standard AETR layout."""
-    return 3 + aux
+_aux_index = aux_channel

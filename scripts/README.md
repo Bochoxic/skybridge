@@ -33,6 +33,8 @@ something fails you know which layer broke.
 | 3 | `arm_test.py` | The FC accepts arm/disarm over the link | **yes** |
 | 4 | `hover_keyboard.py` | Manual throttle and roll under your hand | **yes** |
 | 5 | `example_control_loop.py` | Closed-loop code can fly it | **yes** |
+| 6 | `rc_probe.py` | The radio's USB channels map where drone.yaml expects | no |
+| 7 | `rc_fly.py` | You can fly from the radio, through the laptop | **yes** |
 
 `disarm.py` is the panic button and belongs open in a second terminal
 from step 3 onwards.
@@ -194,6 +196,64 @@ control code you write has the same obligation: **call a `set_*` method
 every iteration**, whether or not you have a new command.
 
 ---
+
+## `rc_probe.py` — check the radio's USB channels
+
+Reads the radio in EdgeTX **USB Joystick** mode (`/dev/input/js0`) and
+shows each mapped CRSF channel in µs, which configured modes are active,
+and any pressed buttons. Nothing is transmitted, so the TX module is not
+needed.
+
+```bash
+uv run python scripts/rc_probe.py
+```
+
+Move every stick and flip every switch. Check the following:
+
+- Each stick moves its own channel (roll/pitch/throttle/yaw) and covers
+  988–2012 µs. A reversed stick gets `invert: true` in `rc.mapping`.
+- The arm switch shows `arm` under *active modes*, and the mode switch
+  shows `angle` / `acro`. **EdgeTX −100% is 988 µs**, so a Betaflight range
+  that starts at 1000 stays inactive on a fully-low switch. Move the
+  range start (to 900 in Betaflight *and* `drone.yaml`) or the switch endpoint.
+
+On the Boxer probed on 2026-11-07, CH5/CH6 did not move. The arm and mode
+switches have to be mixed onto CH5/CH6 in the radio first.
+
+## `rc_fly.py` — fly from the radio, through the laptop
+
+```
+Boxer --USB-C--> laptop --USB-UART--> ELRS TX module --2.4GHz--> drone
+```
+
+Forwards the radio's channels raw over CRSF, so the drone flies as it
+does on the radio's own link (Betaflight applies the rates, and the
+switches drive arm and modes). The laptop adds guards
+(`src/skybridge/passthrough.py`):
+
+| Guard | Behaviour |
+|---|---|
+| Startup interlock | Arm is held off until the arm switch has been seen OFF once |
+| Throttle-high arm | Arming with throttle ≥ `min_check` is refused until the switch is cycled |
+| `--max-throttle` | Scales the throttle stick: full stick = that fraction |
+| Radio unplugged | The feed stops and the bridge watchdog disarms within `command_timeout` |
+
+**Before the first run:**
+
+1. Set **Internal RF to OFF** for this model on the radio. Otherwise two
+   transmitters fight over the receiver. The USB joystick output keeps
+   working without RF.
+2. Bind the receiver to the external TX module on `serial.port`.
+3. Run `rc_probe.py` and confirm that the arm and mode switches register.
+4. **Props off.** Check that the Betaflight Receiver tab matches the sticks.
+
+```bash
+uv run python scripts/rc_fly.py --dry-run          # no TX: show what would be sent
+uv run python scripts/rc_fly.py --max-throttle 0.5
+```
+
+The status line shows arm state, sticks, mode, telemetry, and any guard
+message (`!! ...`). Ctrl-C stops and disarms.
 
 ## `disarm.py` — panic button
 
