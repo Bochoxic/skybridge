@@ -128,7 +128,8 @@ also gives the bring-up order to work through on a new airframe.
 | `hover_keyboard.py` | Fly manually from the keyboard (throttle + roll) | yes |
 | `example_control_loop.py` | Closed-loop example using the library | yes |
 | `rc_probe.py` | Show the USB radio's channels and active modes | no |
-| `rc_fly.py` | Fly from the radio through the laptop (raw passthrough + guards) | yes |
+| `rc_fly.py` | Fly from the radio through the laptop (raw passthrough + guards); `--perception` adds live tracking | yes |
+| `perception_live.py` | Live drone detection and tracking from the RealSense, with a Rerun view | no |
 | `disarm.py` | Panic button: force disarm and hold it | no |
 | `wifi_telem.py` | MAVLink telemetry over WiFi (read-only) | no |
 | `legacy/` | Abandoned RC-over-MAVLink attempts; see MAVLINK.md | — |

@@ -27,6 +27,10 @@ Usage:
     python scripts/rc_fly.py --dry-run              # no TX: show what would be sent
     python scripts/rc_fly.py                        # live, full throttle range
     python scripts/rc_fly.py --max-throttle 0.5
+    python scripts/rc_fly.py --perception           # + live tracking and viewer
+
+With --perception, wait for the status line to leave "VIS warmup" before
+taking off: that second learns the static background.
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -51,9 +56,10 @@ from skybridge.rc import JoystickSource, active_modes  # noqa: E402
 from skybridge.units import tick_to_us  # noqa: E402
 
 CONFIG = Path(__file__).parent.parent / "configs" / "drone.yaml"
+VIS_REFRESH = 0.2  # seconds; its age changes every tick, and printing is not free
 
 
-def status_line(bridge: Bridge, cfg: DroneConfig, st: PassthroughStatus) -> str:
+def status_line(bridge: Bridge, cfg: DroneConfig, st: PassthroughStatus, vis: str = "") -> str:
     if st.state != "live":
         return f"\r{st.state.upper():6} {st.note}\033[K"
 
@@ -82,7 +88,8 @@ def status_line(bridge: Bridge, cfg: DroneConfig, st: PassthroughStatus) -> str:
         tel.append(f"LQ{s.link.value.uplink_lq}")
 
     note = f"  !! {st.note}" if st.note else ""
-    return f"\r{flag} {sticks} mode={modes} | {' '.join(tel)}{note}\033[K"
+    vis_part = f" | {vis}" if vis else ""
+    return f"\r{flag} {sticks} mode={modes} | {' '.join(tel)}{vis_part}{note}\033[K"
 
 
 def main() -> None:
@@ -93,10 +100,25 @@ def main() -> None:
     ap.add_argument("--max-throttle", type=float, help="override rc.max_throttle (0..1]")
     ap.add_argument("--dry-run", action="store_true",
                     help="no TX module: frames go to an in-memory transport")
+    vis = ap.add_argument_group("live tracking (a separate process; RC never waits on it)")
+    vis.add_argument("--perception", action="store_true",
+                     help="run detection and tracking from the RealSense")
+    vis.add_argument("--no-viewer", action="store_true", help="don't open the Rerun viewer")
+    vis.add_argument("--record", action="store_true",
+                     help="save full-resolution depth for offline replay")
+    vis.add_argument("--color", action="store_true", help="add a low-rate RGB view")
+    vis.add_argument("--replay", help="use this .rrd instead of the camera (bench test)")
     args = ap.parse_args()
 
     cfg = DroneConfig.from_yaml(args.config)
     bus = Bus()  # the recording hook: subscribe here to log rc/telemetry later
+
+    session = None
+    if args.perception:
+        from skybridge.perception.session import PerceptionSession
+
+        session = PerceptionSession(bus, cfg, viewer=not args.no_viewer, record=args.record,
+                                    replay=args.replay, color=args.color)
 
     source = JoystickSource(args.device or cfg.rc.device, bus=bus)
     print(source)
@@ -115,13 +137,22 @@ def main() -> None:
                  f"device has {source.num_axes}")
     print(f"max throttle {passthrough.max_throttle:.0%}. Ctrl-C to stop and disarm.\n")
 
+    if session is not None:
+        session.start()
+        print(f"perception log: {session.log_path}")
+
     stop = threading.Event()
     last = [""]
+    vis_text = [""]
+    vis_due = [0.0]
 
     def show(st: PassthroughStatus) -> None:
         if transport is not None and isinstance(transport, LoopbackTransport):
             transport.written.clear()  # dry run: don't accumulate forever
-        line = status_line(bridge, cfg, st)
+        if session is not None and time.monotonic() >= vis_due[0]:
+            vis_due[0] = time.monotonic() + VIS_REFRESH
+            vis_text[0] = session.status_text()
+        line = status_line(bridge, cfg, st, vis_text[0])
         if line != last[0]:
             print(line, end="", flush=True)
             last[0] = line
@@ -135,6 +166,8 @@ def main() -> None:
         pass
     finally:
         source.close()
+        if session is not None:
+            session.close()
         print("\nstopped, disarmed.")
         if not source.alive and source.error:
             print(f"radio: {source.error}")

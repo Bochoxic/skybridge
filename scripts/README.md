@@ -35,6 +35,7 @@ something fails you know which layer broke.
 | 5 | `example_control_loop.py` | Closed-loop code can fly it | **yes** |
 | 6 | `rc_probe.py` | The radio's USB channels map where drone.yaml expects | no |
 | 7 | `rc_fly.py` | You can fly from the radio, through the laptop | **yes** |
+| 8 | `perception_live.py` | The camera finds and tracks the drone live | no |
 
 `disarm.py` is the panic button and belongs open in a second terminal
 from step 3 onwards.
@@ -254,6 +255,57 @@ uv run python scripts/rc_fly.py --max-throttle 0.5
 
 The status line shows arm state, sticks, mode, telemetry, and any guard
 message (`!! ...`). Ctrl-C stops and disarms.
+
+### Flying with live tracking
+
+```bash
+uv run python scripts/rc_fly.py --perception                # + camera tracking and viewer
+uv run python scripts/rc_fly.py --perception --record       # + save it for offline replay
+uv run python scripts/rc_fly.py --dry-run --perception --replay data/realsense/<stem>.rrd
+```
+
+`--perception` starts `perception_live.py` as a separate process, so
+nothing it does can stall the RC loop. Set the camera pose in
+`configs/perception.yaml` first.
+
+The status line gains a `VIS` field:
+
+| Text | Meaning |
+|---|---|
+| `VIS waiting` | The camera process is starting |
+| `VIS warmup` | Learning the background: **don't take off yet** |
+| `VIS none` / `VIS candidate` | Running, no confirmed track |
+| `VIS z=1.23m v=+0.1 detected 45ms` | Tracking: height, climb rate, status, age since capture |
+| `VIS LOST 0.7s` | No fresh estimate. Flight is unaffected |
+
+The camera process logs to `data/live/<run>_perception.log`. With
+`--record`, `data/live/<run>_flight.rrd` holds RC, telemetry and the drone's
+estimated state (position, velocity, uncertainty, tracking status), and
+full-resolution depth goes to `data/realsense/`. Both carry `wall_time`, so
+they line up.
+
+If a run shows `VIS LOST (not running)`, check that log. `Device or resource
+busy` means another process still has the camera open.
+
+## `perception_live.py` — live detection and tracking
+
+Runs the camera, tracker and viewer on their own, with no radio or drone
+link, so you can check the setup before flying. It is the same code that
+`rc_fly.py --perception` runs.
+
+```bash
+uv run python scripts/perception_live.py                     # camera + viewer
+uv run python scripts/perception_live.py --viewer off        # camera only
+uv run python scripts/perception_live.py --cam-height 1.2 --cam-pitch 15
+uv run python scripts/perception_live.py --replay data/realsense/<stem>.rrd
+```
+
+Start with the drone on the ground or out of view: the first second learns
+the static background. Keep the pilot outside the crop box in
+`configs/perception.yaml`.
+
+**What good looks like:** `background ready`, then once a second
+`process p50` well under 33 ms and few `skipped` frames.
 
 ## `disarm.py` — panic button
 

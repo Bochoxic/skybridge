@@ -5,6 +5,11 @@ D455. The goal is a ground-truth position/velocity estimate to compare
 against (and eventually feed) the flight controller. Everything here is
 **offline**: record first, then run detection on the recording.
 
+The detection and tracking code lives in `skybridge/perception/` and is
+shared with the live path (`scripts/perception_live.py`,
+`rc_fly.py --perception`; see `scripts/README.md`). A flight saved with
+`--record` can be replayed here with `drone_detect.py`.
+
 > The package is named `optitrack`, but no OptiTrack hardware is involved
 > yet — the RealSense is the sensor doing the tracking.
 
@@ -32,7 +37,7 @@ rerun <stem>_detections.rrd <stem>_motion.rrd
 | File | What it does |
 |---|---|
 | `realsense_record.py` | Record RGB + depth + IMU from the D455 to a Rerun `.rrd`, plus a JSON sidecar with intrinsics/extrinsics and depth scale |
-| `drone_detect.py` | Depth-based 3D detection (background subtraction → crop box → DBSCAN) with a constant-velocity Kalman tracker |
+| `drone_detect.py` | Replays a recording through the depth-based 3D detection (background subtraction → crop box → DBSCAN) and constant-velocity Kalman tracker in `skybridge/perception/`, and writes CSV + Rerun output |
 | `motion_detect.py` | 2D motion detection on the RGB stream (MOG2 background subtraction → largest blob). Not fused with depth yet |
 | `../../../tests/test_drone_tracker.py` | Tracker behaviour across depth dropouts (coasting, sparse fallback, reset) |
 
