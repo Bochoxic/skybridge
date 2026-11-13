@@ -1,0 +1,44 @@
+# Live perception settings (scripts/perception_live.py, rc_fly.py --perception).
+#
+# Everything not listed uses the default in skybridge/perception/config.py.
+# Offline, drone_detect.py takes the same pipeline settings as flags.
+
+camera:
+  width: 848
+  height: 480
+  fps: 30               # the pipeline keeps up at 30, not at 90
+  color: false          # depth only: less USB and CPU load
+
+pipeline:
+  # MEASURE THESE for your rig. With 0, 0 world z is height relative to the
+  # camera, not above the floor. 1 degree of pitch error is about 3.5 cm at 2 m.
+  cam_height: 0.0       # lens above the floor, metres
+  cam_pitch: 0.0        # degrees, positive = looking down
+
+  # Flight volume, camera frame (x right, y down, z forward), metres.
+  # Keep the pilot and other clutter outside this box.
+  x_min: -1.0
+  x_max: 1.0
+  y_min: -1.0
+  y_max: 1.0
+  z_min: 0.3
+  z_max: 1.5
+
+  bg_frames: 30         # the background is learned from these, before takeoff
+  max_points: 3000      # above this, cluster only around the track (bounds frame time)
+
+viewer:
+  # By default the live view is the drone position, its trail, the position and
+  # velocity plots, and a background logged once.
+  detail: false         # true adds 3D points, cluster labels and association plots,
+                        # but overloads the viewer on this laptop (seconds of lag)
+  background_stride: 4  # thin the background by this, on top of pipeline.stride
+  depth: false          # true adds the live depth image
+  depth_stride: 2       # 2 = half resolution
+  depth_hz: 10
+  color_hz: 5
+  memory_limit: 2GB
+
+link:
+  host: 127.0.0.1
+  port: 14660

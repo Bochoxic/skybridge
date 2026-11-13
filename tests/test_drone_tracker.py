@@ -1,10 +1,11 @@
-"""Tracker behaviour across depth dropouts (src/skybridge/optitrack/drone_detect.py)."""
+"""Tracker behaviour across depth dropouts (src/skybridge/perception/tracker.py)."""
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from skybridge.optitrack.drone_detect import Tracker, camera_to_world
+from skybridge.perception.geometry import camera_to_world
+from skybridge.perception.tracker import Tracker
 
 FPS = 30.0
 ARGS = SimpleNamespace(

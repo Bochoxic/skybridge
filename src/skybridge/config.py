@@ -9,11 +9,16 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field
+from itertools import combinations
 from pathlib import Path
 
 import yaml
 
 from . import units
+
+# The channels a controller can be given. Arm and mode channels are not here
+# on purpose: those stay on the radio.
+AXES = ("roll", "pitch", "yaw", "throttle")
 
 
 class ConfigError(ValueError):
@@ -137,6 +142,26 @@ class RcConfig:
 
 
 @dataclass(frozen=True)
+class ControllerConfig:
+    """One controller: what enables it and what it may touch.
+
+    ``params`` stays a plain dict here; the controller's own dataclass checks
+    it at startup, so this module need not know about any controller.
+    """
+
+    switch: ModeConfig                  # the aux range that enables it
+    axes: frozenset[str]                # the only stick axes it may drive
+    require_mode: str                   # flight mode it may run in
+    stick_override: float = 0.15        # stick travel that hands control back
+    params: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ControlConfig:
+    controllers: dict[str, ControllerConfig] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class DroneConfig:
     serial: SerialConfig = field(default_factory=SerialConfig)
     channels: ChannelMap = field(default_factory=ChannelMap)
@@ -144,6 +169,7 @@ class DroneConfig:
     modes: dict[str, ModeConfig] = field(default_factory=dict)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     rc: RcConfig = field(default_factory=RcConfig)
+    control: ControlConfig = field(default_factory=ControlConfig)
 
     # ── Loading ───────────────────────────────────────────────────────────────
     @classmethod
@@ -162,6 +188,7 @@ class DroneConfig:
             modes=_parse_modes(raw.get("modes", {})),
             safety=SafetyConfig(**raw.get("safety", {})),
             rc=_parse_rc(raw.get("rc", {})),
+            control=_parse_control(raw.get("control", {})),
         )
         cfg.validate()
         return cfg
@@ -202,14 +229,7 @@ class DroneConfig:
                 )
 
         for name, mode in self.modes.items():
-            lo, hi = mode.range_us
-            if not (900 <= lo < hi <= 2100):
-                raise ConfigError(
-                    f"mode {name!r}: range {mode.range_us} must satisfy "
-                    f"900 <= start < end <= 2100"
-                )
-            if mode.aux < 1:
-                raise ConfigError(f"mode {name!r}: aux must be >= 1")
+            _check_aux_range(f"mode {name!r}", mode)
 
         rc = self.rc
         if not 0.0 < rc.max_throttle <= 1.0:
@@ -226,6 +246,48 @@ class DroneConfig:
                 f"rc.mapping does not map the arm channel "
                 f"(ch{self.modes['arm'].channel + 1})"
             )
+
+        self._validate_control()
+
+    def _validate_control(self) -> None:
+        controllers = self.control.controllers
+        mode_channels = {m.channel: name for name, m in self.modes.items()}
+
+        for name, ctl in controllers.items():
+            label = f"controller {name!r}"
+            _check_aux_range(label, ctl.switch)
+            channel = ctl.switch.channel
+            if channel not in self.rc.mapping:
+                raise ConfigError(f"{label}: switch ch{channel + 1} is not in rc.mapping")
+            if channel in mode_channels:
+                raise ConfigError(
+                    f"{label}: switch ch{channel + 1} is already used by "
+                    f"mode {mode_channels[channel]!r}"
+                )
+            if ctl.require_mode not in self.modes:
+                raise ConfigError(f"{label}: unknown require_mode {ctl.require_mode!r}")
+            if not ctl.axes:
+                raise ConfigError(f"{label}: axes must not be empty")
+            if unknown := ctl.axes - set(AXES):
+                raise ConfigError(
+                    f"{label}: unknown axes {sorted(unknown)}; allowed: {', '.join(AXES)}"
+                )
+            if not 0.0 < ctl.stick_override <= 1.0:
+                raise ConfigError(f"{label}: stick_override must be in (0, 1]")
+
+        for (name_a, a), (name_b, b) in combinations(controllers.items(), 2):
+            if a.switch.channel == b.switch.channel:
+                # Only one range on a channel can be active, so sharing axes is fine.
+                if _ranges_overlap(a.switch.range_us, b.switch.range_us):
+                    raise ConfigError(
+                        f"controllers {name_a!r} and {name_b!r} overlap on switch "
+                        f"ch{a.switch.channel + 1}: {a.switch.range_us} and {b.switch.range_us}"
+                    )
+            elif shared := a.axes & b.axes:
+                raise ConfigError(
+                    f"controllers {name_a!r} and {name_b!r} use different switches, so "
+                    f"they can be on together, but both drive {sorted(shared)}"
+                )
 
     def mode(self, name: str) -> ModeConfig:
         try:
@@ -296,13 +358,58 @@ def _parse_rc(raw: dict) -> RcConfig:
 
 
 def _parse_modes(raw: dict) -> dict[str, ModeConfig]:
-    modes = {}
-    for name, spec in raw.items():
-        try:
-            lo, hi = spec["range"]
-            modes[name] = ModeConfig(aux=spec["aux"], range_us=(int(lo), int(hi)))
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ConfigError(
-                f"mode {name!r}: expected {{aux: N, range: [lo, hi]}}"
-            ) from exc
-    return modes
+    return {name: _parse_aux_range(f"mode {name!r}", spec) for name, spec in raw.items()}
+
+
+def _parse_aux_range(label: str, spec: object) -> ModeConfig:
+    try:
+        lo, hi = spec["range"]  # type: ignore[index]
+        return ModeConfig(aux=spec["aux"], range_us=(int(lo), int(hi)))  # type: ignore[index]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigError(f"{label}: expected {{aux: N, range: [lo, hi]}}") from exc
+
+
+def _check_aux_range(label: str, mode: ModeConfig) -> None:
+    lo, hi = mode.range_us
+    if not (900 <= lo < hi <= 2100):
+        raise ConfigError(
+            f"{label}: range {mode.range_us} must satisfy 900 <= start < end <= 2100"
+        )
+    if mode.aux < 1:
+        raise ConfigError(f"{label}: aux must be >= 1")
+
+
+def _ranges_overlap(a: tuple[int, int], b: tuple[int, int]) -> bool:
+    """Whether two half-open ``[start, end)`` ranges share any value."""
+    return a[0] < b[1] and b[0] < a[1]
+
+
+def _parse_control(raw: dict) -> ControlConfig:
+    if unknown := set(raw) - {"controllers"}:
+        raise ConfigError(f"unknown control keys: {sorted(unknown)}")
+    return ControlConfig(
+        controllers={
+            name: _parse_controller(name, spec)
+            for name, spec in (raw.get("controllers") or {}).items()
+        }
+    )
+
+
+def _parse_controller(name: str, spec: dict) -> ControllerConfig:
+    label = f"controller {name!r}"
+    if not isinstance(spec, dict):
+        raise ConfigError(f"{label}: expected a mapping")
+    required = {"switch", "axes", "require_mode"}
+    if missing := required - set(spec):
+        raise ConfigError(f"{label}: missing {sorted(missing)}")
+    if unknown := set(spec) - required - {"stick_override", "params"}:
+        raise ConfigError(f"{label}: unknown keys {sorted(unknown)}")
+    if not isinstance(spec["axes"], list):
+        raise ConfigError(f"{label}: axes must be a list, e.g. [throttle]")
+    return ControllerConfig(
+        switch=_parse_aux_range(label, spec["switch"]),
+        axes=frozenset(spec["axes"]),
+        require_mode=spec["require_mode"],
+        stick_override=spec.get("stick_override", ControllerConfig.stick_override),
+        params=dict(spec.get("params") or {}),
+    )

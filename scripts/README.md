@@ -35,6 +35,7 @@ something fails you know which layer broke.
 | 5 | `example_control_loop.py` | Closed-loop code can fly it | **yes** |
 | 6 | `rc_probe.py` | The radio's USB channels map where drone.yaml expects | no |
 | 7 | `rc_fly.py` | You can fly from the radio, through the laptop | **yes** |
+| 8 | `perception_live.py` | The camera finds and tracks the drone live | no |
 
 `disarm.py` is the panic button and belongs open in a second terminal
 from step 3 onwards.
@@ -254,6 +255,134 @@ uv run python scripts/rc_fly.py --max-throttle 0.5
 
 The status line shows arm state, sticks, mode, telemetry, and any guard
 message (`!! ...`). Ctrl-C stops and disarms.
+
+### Flying with live tracking
+
+```bash
+uv run python scripts/rc_fly.py --perception                # + camera tracking and viewer
+uv run python scripts/rc_fly.py --perception --record       # + save it for offline replay
+uv run python scripts/rc_fly.py --dry-run --perception --replay data/realsense/<stem>.rrd
+```
+
+`--perception` starts `perception_live.py` as a separate process, so
+nothing it does can stall the RC loop. Set the camera pose in
+`configs/perception.yaml` first.
+
+The status line gains a `VIS` field:
+
+| Text | Meaning |
+|---|---|
+| `VIS waiting` | The camera process is starting |
+| `VIS warmup` | Learning the background: **don't take off yet** |
+| `VIS none` / `VIS candidate` | Running, no confirmed track |
+| `VIS z=1.23m v=+0.1 detected 45ms` | Tracking: height, climb rate, status, age since capture |
+| `VIS LOST 0.7s` | No fresh estimate. Flight is unaffected |
+
+The camera process logs to `data/live/<run>_perception.log`. With
+`--record`, `data/live/<run>_flight.rrd` holds RC, telemetry and the drone's
+estimated state (position, velocity, uncertainty, tracking status), and
+full-resolution depth goes to `data/realsense/`. Both carry `wall_time`, so
+they line up.
+
+If a run shows `VIS LOST (not running)`, check that log. `Device or resource
+busy` means another process still has the camera open.
+
+### Flying with altitude hold
+
+```bash
+uv run python scripts/rc_fly.py --perception --control --max-throttle 0.5
+uv run python scripts/rc_fly.py --dry-run --perception --control --replay data/realsense/<stem>.rrd
+```
+
+`--control` loads the controllers under `control.controllers` in
+`configs/drone.yaml`. Without it, the switches do nothing. Altitude hold takes
+over throttle only, so roll, pitch and yaw stay on the sticks.
+
+**Before the first flight:**
+
+1. Set `cam_pitch` in `configs/perception.yaml`. If it is wrong, moving forward
+   looks like a height change and the drone will climb or sink to correct it.
+2. Check in Betaflight that no mode uses AUX3.
+3. Keep someone at the laptop, ready to press Ctrl-C. **A radio that freezes
+   while plugged in can't be detected yet**, and a frozen switch keeps holding.
+
+**To use it:** hover in Angle mode with a confirmed track (`VIS ... detected`),
+hold steady, then flip CH7 high. The target is your height at that moment and
+the throttle baseline is your stick at that moment, so hover first. Keep the
+stick about where it was: it is what you get back when the hold ends.
+
+It refuses to engage unless all of these hold: armed, Angle mode, track
+`detected`, estimate fresh, throttle above 15%, and climb rate under 0.3 m/s.
+
+It hands throttle back to the stick in the same tick if any of these happen:
+
+| Status line | Cause |
+|---|---|
+| `... stick moved` | The stick moved more than 15% from where it was at engage |
+| `no track`, `track ...`, `estimate stale`, `track coasting` | Perception lost the drone or stopped |
+| `height error +0.52 m` | More than 0.5 m off target: weak authority, or the track jumped |
+| `left angle mode`, `disarmed` | Flight mode or arm switch changed |
+| `controller fault` | A bug in the controller (details in the log). RC keeps running |
+
+After a refusal or drop-out it **stays off until CH7 is cycled**, even if the
+track comes back, so throttle never changes by surprise.
+
+While engaged the status line shows `ALT 1.18>1.20m T32%`: height, target,
+throttle sent.
+
+**Tuning.** The gains in `configs/drone.yaml` hold height in flight (first
+flights 2026-11-13). Retune only if your drone or battery changes the hover
+throttle a lot. With `--record`, or the viewer open,
+`plots/control/altitude_hold` has setpoint, z, climb rate, integral and throttle.
+
+1. Sagging or rising right after engaging: the stick was not at hover. Engage
+   from a steadier hover before changing gains.
+2. Slow bounce: raise `kd`, or lower `kp`.
+3. Sluggish, large errors: raise `kp` and `kd` together.
+4. Slow offset that doesn't go away: raise `ki`.
+
+**Trying a controller on a recorded flight:** `control_replay.py` runs the
+real controller over a flight log from `--perception --record`, with the median
+airborne height as the target and the median throttle as the trim, and compares
+its output with what you flew.
+
+```bash
+uv run python scripts/control_replay.py                     # newest log, opens Rerun
+uv run python scripts/control_replay.py --set kp=0.12 --set max_error=2
+uv run python scripts/control_replay.py data/live/<run>_flight.rrd --setpoint 0.3
+```
+
+It is **open loop**: the recorded drone flew on your sticks, so the output
+never changes the height the controller sees next. Use it to check reactions to
+real height, noise and track loss, and to compare gains. It can't show
+stability, so a stable-looking replay is no promise about the real loop.
+
+**Adding a controller:** write a class with `name`, `axes`, `engage()` and
+`update()` (see `src/skybridge/control/base.py`), add it to `CONTROLLERS` in
+`control/__init__.py`, and give it an entry under `control.controllers` with
+its own switch range and allowed axes. Two controllers can't share a switch
+range, and two on different switches can't share an axis; config loading
+rejects both.
+
+## `perception_live.py` — live detection and tracking
+
+Runs the camera, tracker and viewer on their own, with no radio or drone
+link, so you can check the setup before flying. It is the same code that
+`rc_fly.py --perception` runs.
+
+```bash
+uv run python scripts/perception_live.py                     # camera + viewer
+uv run python scripts/perception_live.py --viewer off        # camera only
+uv run python scripts/perception_live.py --cam-height 1.2 --cam-pitch 15
+uv run python scripts/perception_live.py --replay data/realsense/<stem>.rrd
+```
+
+Start with the drone on the ground or out of view: the first second learns
+the static background. Keep the pilot outside the crop box in
+`configs/perception.yaml`.
+
+**What good looks like:** `background ready`, then once a second
+`process p50` well under 33 ms and few `skipped` frames.
 
 ## `disarm.py` — panic button
 
