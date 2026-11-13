@@ -60,16 +60,19 @@ take over from each other. A mux layer would choose the source from a
 radio switch, e.g. CH7 high = autonomy, with the radio always able to take
 back control and the arm switch kept on the radio in both modes.
 
-For alt hold, the place to add it is `RcPassthrough.step()`, between
-`mapping.apply()` and `cap_throttle()`: replace only the throttle tick using
-`DroneEstimate.at(now)` from `PerceptionLink.latest()`, and fall back to the
-pilot's stick when the estimate is invalid or stale. Alt hold needs only
-world z, so it avoids aligning the FC's yaw with the camera frame.
+Altitude hold now does this for throttle: see `skybridge/control/` and
+`rc_fly.py --control`. It runs after `cap_throttle()` and the arm guard, not
+before the cap, which would rescale its output. A full autonomy mode would be
+another controller with its own switch range and axes.
 
-**Fix "Radio liveness and reconnect" below first.** A frozen radio already
-holds the last sticks; with a controller it would also hold the mode.
+Altitude hold has been flown and holds height (first flights 2026-11-13).
 
 ## Radio liveness and reconnect
+
+**Open risk with `--control`.** A frozen radio already holds the last sticks;
+with a controller engaged it also holds the switch, so altitude hold keeps
+running and the pilot can't end it from the radio. Ctrl-C on the laptop still
+disarms, so keep someone at the keyboard until this is fixed.
 
 joydev only reports changes, so a frozen radio that is still plugged in
 looks the same as a quiet one. Only an unplug is detected. Reading the
