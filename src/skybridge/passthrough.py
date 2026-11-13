@@ -4,7 +4,8 @@
 
 Channels are forwarded raw, so the drone flies exactly as it would on the
 radio's own link: Betaflight applies rates, and the switches select arm
-and modes. The laptop adds only guards:
+and modes. An optional :class:`skybridge.control.ControlSupervisor` may then
+replace individual stick channels. The laptop otherwise adds only guards:
 
 1. **Startup arm interlock.** The arm channel is held disarmed until the
    arm switch has been seen *off* at least once. Plugging in (or starting
@@ -26,13 +27,17 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .bridge import Bridge
 from .config import DroneConfig
 from .crsf.constants import CH_MAX, CH_MIN
 from .rc.mapping import RcMapping
 from .rc.source import RcSource
-from .units import tick_to_us, us_to_tick
+from .units import throttle_fraction, tick_to_us  # noqa: F401  (throttle_fraction re-exported)
+
+if TYPE_CHECKING:
+    from .control.supervisor import ControlStatus, ControlSupervisor
 
 # Guard notes, shown to the pilot.
 ARM_OK = ""
@@ -104,6 +109,7 @@ class PassthroughStatus:
     ticks: tuple[int, ...] = ()     # what was sent this step (empty unless live)
     armed: bool = False
     note: str = ""
+    control: tuple[ControlStatus, ...] = ()  # one per configured controller
 
 
 class RcPassthrough:
@@ -116,6 +122,7 @@ class RcPassthrough:
         config: DroneConfig,
         *,
         max_throttle: float | None = None,
+        supervisor: ControlSupervisor | None = None,
     ) -> None:
         self.bridge = bridge
         self.source = source
@@ -125,6 +132,8 @@ class RcPassthrough:
         if not 0.0 < self.max_throttle <= 1.0:
             raise ValueError(f"max_throttle {self.max_throttle} must be in (0, 1]")
         self.guard = ArmGuard(config)
+        self.supervisor = supervisor
+        self._throttle_ceiling = cap_throttle([CH_MAX], 0, self.max_throttle)[0]
 
     def step(self) -> PassthroughStatus:
         """Read the radio, apply guards, send. One call per RC tick."""
@@ -139,8 +148,16 @@ class RcPassthrough:
         ticks = self.mapping.apply(frame.axes)
         ticks = cap_throttle(ticks, self.config.channels.throttle, self.max_throttle)
         ticks = self.guard.apply(ticks)
+        control: tuple[ControlStatus, ...] = ()
+        if self.supervisor is not None:
+            # Last, so the cap cannot rescale a controller's output and the
+            # arm guard keeps judging the pilot's real stick.
+            ticks = self.supervisor.apply(
+                ticks, armed=self.guard.armed, throttle_ceiling=self._throttle_ceiling
+            )
+            control = self.supervisor.status
         self.bridge.set_channels(ticks)
-        return PassthroughStatus("live", tuple(ticks), self.guard.armed, self.guard.note)
+        return PassthroughStatus("live", tuple(ticks), self.guard.armed, self.guard.note, control)
 
     def run(
         self,
@@ -163,7 +180,3 @@ class RcPassthrough:
                 stop.wait(delay)
 
 
-def throttle_fraction(tick: int) -> float:
-    """Throttle tick as 0..1 of the 1000..2000us range, for display."""
-    lo, hi = us_to_tick(1000), us_to_tick(2000)
-    return max(0.0, min(1.0, (tick - lo) / (hi - lo)))

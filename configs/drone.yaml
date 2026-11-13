@@ -64,3 +64,25 @@ rc:
     ch5: {axis: 4}      # AUX1 arm
     ch6: {axis: 5}      # AUX2 angle / acro
     ch7: {axis: 6}      # AUX3 (3-position switch)
+
+# Controllers that rc_fly.py --control can switch on in flight. Each one has
+# its own switch range and its own allowed axes. Two controllers cannot share
+# a switch range, and two on different switches cannot share an axis.
+control:
+  controllers:
+    altitude_hold:                            # a name in skybridge.control.CONTROLLERS
+      switch: {aux: 3, range: [1700, 2100]}   # CH7 high. No Betaflight mode may use AUX3
+      axes: [throttle]                        # the only channels it may drive
+      require_mode: angle                     # refused, or drops out, in any other mode
+      stick_override: 0.5                    # moving the stick this far hands control back
+      params:
+        kp: 0.08                # throttle per metre of height error
+        ki: 0.02                # throttle per metre-second
+        kd: 0.08                # throttle per m/s of climb rate
+        authority: 0.10         # output stays within this of the throttle at engage
+        i_limit: 0.08           # integral term limit
+        min_engage_throttle: 0.15   # refuse below this stick: probably on the ground
+        max_engage_climb: 0.3   # m/s; refuse while climbing or sinking faster
+        max_age: 0.2            # seconds; estimate older than this drops out
+        max_since_update: 0.2   # seconds of coasting tolerated
+        max_error: 0.5          # metres from the target; beyond this drops out

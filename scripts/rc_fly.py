@@ -28,9 +28,13 @@ Usage:
     python scripts/rc_fly.py                        # live, full throttle range
     python scripts/rc_fly.py --max-throttle 0.5
     python scripts/rc_fly.py --perception           # + live tracking and viewer
+    python scripts/rc_fly.py --perception --control # + controllers, e.g. altitude hold
 
 With --perception, wait for the status line to leave "VIS warmup" before
 taking off: that second learns the static background.
+
+With --control, each controller in configs/drone.yaml is engaged by its own
+switch range. See scripts/README.md before using it.
 """
 
 from __future__ import annotations
@@ -51,15 +55,28 @@ from skybridge import (  # noqa: E402
     PassthroughStatus,
     RcPassthrough,
 )
-from skybridge.passthrough import throttle_fraction  # noqa: E402
+from skybridge.config import ConfigError  # noqa: E402
 from skybridge.rc import JoystickSource, active_modes  # noqa: E402
-from skybridge.units import tick_to_us  # noqa: E402
+from skybridge.units import throttle_fraction, tick_to_us  # noqa: E402
 
 CONFIG = Path(__file__).parent.parent / "configs" / "drone.yaml"
 VIS_REFRESH = 0.2  # seconds; its age changes every tick, and printing is not free
 
 
-def status_line(bridge: Bridge, cfg: DroneConfig, st: PassthroughStatus, vis: str = "") -> str:
+def control_text(st: PassthroughStatus) -> str:
+    """What each controller is doing, or why it isn't. Empty when all are simply off."""
+    parts = []
+    for c in st.control:
+        if c.engaged:
+            parts.append(c.text or c.name)
+        elif c.note:
+            parts.append(f"{c.name} off: {c.note}")
+    return " ".join(parts)
+
+
+def status_line(
+    bridge: Bridge, cfg: DroneConfig, st: PassthroughStatus, vis: str = "", ctl: str = ""
+) -> str:
     if st.state != "live":
         return f"\r{st.state.upper():6} {st.note}\033[K"
 
@@ -89,7 +106,8 @@ def status_line(bridge: Bridge, cfg: DroneConfig, st: PassthroughStatus, vis: st
 
     note = f"  !! {st.note}" if st.note else ""
     vis_part = f" | {vis}" if vis else ""
-    return f"\r{flag} {sticks} mode={modes} | {' '.join(tel)}{vis_part}{note}\033[K"
+    ctl_part = f" | {ctl}" if ctl else ""
+    return f"\r{flag} {sticks} mode={modes} | {' '.join(tel)}{vis_part}{ctl_part}{note}\033[K"
 
 
 def main() -> None:
@@ -108,7 +126,12 @@ def main() -> None:
                      help="save full-resolution depth for offline replay")
     vis.add_argument("--color", action="store_true", help="add a low-rate RGB view")
     vis.add_argument("--replay", help="use this .rrd instead of the camera (bench test)")
+    ap.add_argument("--control", action="store_true",
+                    help="load control.controllers from the config; each needs its "
+                         "switch to engage (requires --perception)")
     args = ap.parse_args()
+    if args.control and not args.perception:
+        ap.error("--control needs --perception: the controllers fly on its estimates")
 
     cfg = DroneConfig.from_yaml(args.config)
     bus = Bus()  # the recording hook: subscribe here to log rc/telemetry later
@@ -131,7 +154,22 @@ def main() -> None:
     port = args.port or cfg.serial.port
     print("DRY RUN: nothing is transmitted" if args.dry_run else f"TX module on {port}")
 
-    passthrough = RcPassthrough(bridge, source, cfg, max_throttle=args.max_throttle)
+    supervisor = None
+    if args.control:
+        from skybridge.control import build_supervisor
+
+        try:
+            # session.link exists once session.start() has run, before the first tick.
+            supervisor = build_supervisor(cfg, lambda: session.link.latest(),
+                                          lambda: bridge.state, bus=bus)
+        except ConfigError as exc:
+            sys.exit(f"--control: {exc}")
+        for name, entry in cfg.control.controllers.items():
+            print(f"controller {name}: ch{entry.switch.channel + 1} in {entry.switch.range_us}us, "
+                  f"drives {', '.join(sorted(entry.axes))}, {entry.require_mode} mode only")
+
+    passthrough = RcPassthrough(bridge, source, cfg, max_throttle=args.max_throttle,
+                                supervisor=supervisor)
     if passthrough.mapping.max_axis >= source.num_axes:
         sys.exit(f"drone.yaml maps axis {passthrough.mapping.max_axis}, "
                  f"device has {source.num_axes}")
@@ -145,14 +183,22 @@ def main() -> None:
     last = [""]
     vis_text = [""]
     vis_due = [0.0]
+    ctl_text = [""]
+    ctl_key: list[tuple] = [()]
 
     def show(st: PassthroughStatus) -> None:
         if transport is not None and isinstance(transport, LoopbackTransport):
             transport.written.clear()  # dry run: don't accumulate forever
-        if session is not None and time.monotonic() >= vis_due[0]:
+        refresh = session is not None and time.monotonic() >= vis_due[0]
+        if refresh:
             vis_due[0] = time.monotonic() + VIS_REFRESH
             vis_text[0] = session.status_text()
-        line = status_line(bridge, cfg, st, vis_text[0])
+        # The numbers can wait for the refresh; engaging or dropping out cannot.
+        key = tuple((c.name, c.engaged, c.note) for c in st.control)
+        if refresh or key != ctl_key[0]:
+            ctl_key[0] = key
+            ctl_text[0] = control_text(st)
+        line = status_line(bridge, cfg, st, vis_text[0], ctl_text[0])
         if line != last[0]:
             print(line, end="", flush=True)
             last[0] = line

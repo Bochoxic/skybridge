@@ -63,6 +63,7 @@ def make_blueprint(trail_seconds, *, live=False, color=False, detail=True, depth
     images = [rrb.Spatial2DView(name="depth", origin="camera/depth")] if depth else []
     if live:
         plots += [rrb.TimeSeriesView(name="rc (us)", origin="plots/rc"),
+                  rrb.TimeSeriesView(name="control", origin="plots/control"),
                   rrb.TimeSeriesView(name="attitude", origin="plots/telemetry/attitude"),
                   rrb.TimeSeriesView(name="battery", origin="plots/telemetry/battery"),
                   rrb.TimeSeriesView(name="link", origin="plots/telemetry/link_stats")]
@@ -391,7 +392,9 @@ class RerunBusSink:
         log_fn: Callable[[str, Any, float], None] | None = None,
         log_estimates: bool = False,
     ) -> None:
-        self._topics = ("rc/sent", "telemetry/") + ((ESTIMATE_TOPIC,) if log_estimates else ())
+        self._topics = ("rc/sent", "telemetry/", "control/status") + (
+            (ESTIMATE_TOPIC,) if log_estimates else ())
+        self._last_control: dict[str, tuple[bool, str]] = {}
         self._last_status: tuple[str, str] | None = None
         self._last_pos: list[float] | None = None
         self._bus = bus
@@ -450,11 +453,29 @@ class RerunBusSink:
             self._log_series("plots/rc", list(self._names.values()),
                              [tick_to_us(payload[channel]) for channel in self._names])
             return
+        if topic == "control/status":
+            self._log_control(payload)
+            return
         if "mode" in payload:
             rr.log("log/flight_mode", rr.TextLog(payload["mode"]), recording=self._rec)
         numeric = {k: v for k, v in payload.items() if not isinstance(v, (str, bool))}
         self._log_series(f"plots/telemetry/{topic.removeprefix('telemetry/')}",
                          list(numeric), list(numeric.values()))
+
+    def _log_control(self, status: Any) -> None:
+        """A controller's internals for tuning, and a log line when its state changes."""
+        state = (status.engaged, status.note)
+        if state != self._last_control.get(status.name):
+            self._last_control[status.name] = state
+            text = "engaged" if status.engaged else (status.note or "off")
+            level = "WARN" if status.note else "INFO"
+            rr.log("log/control", rr.TextLog(f"{status.name}: {text}", level=level),
+                   recording=self._rec)
+        self._log_series(f"plots/control_engaged/{status.name}", ["engaged"],
+                         [float(status.engaged)])
+        if status.debug:  # one entity: cheaper, and setpoint and z share a plot
+            self._log_series(f"plots/control/{status.name}", list(status.debug),
+                             list(status.debug.values()))
 
     def _log_estimate(self, e: Any) -> None:
         """The drone's state, on the same paths as the live view."""

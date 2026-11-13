@@ -14,6 +14,7 @@ Topics in use:
                                           name = attitude, battery, link_stats, ...
     perception/estimate   DroneEstimate   every tracked depth frame
     perception/result     PerceptionResult  depth and points, perception process only
+    control/status        ControlStatus   every tick while running, then on a change
 
 Timestamps are ``time.monotonic()`` seconds (the Bridge's clock), the
 same base as :class:`skybridge.state.Timestamped`.

@@ -22,7 +22,7 @@ pipeline:
   y_min: -1.0
   y_max: 1.0
   z_min: 0.3
-  z_max: 1.7
+  z_max: 1.5
 
   bg_frames: 30         # the background is learned from these, before takeoff
   max_points: 3000      # above this, cluster only around the track (bounds frame time)

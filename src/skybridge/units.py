@@ -66,6 +66,22 @@ def clamp_tick(tick: int) -> int:
     return max(CH_MIN, min(CH_MAX, int(tick)))
 
 
+# ── Throttle ──────────────────────────────────────────────────────────────────
+# A throttle fraction is 0..1 of the nominal 1000..2000us range.
+
+
+def throttle_fraction(tick: float) -> float:
+    """Throttle tick as 0..1 of the 1000..2000us range."""
+    lo, hi = us_to_tick(US_MIN), us_to_tick(US_MAX)
+    return max(0.0, min(1.0, (tick - lo) / (hi - lo)))
+
+
+def throttle_to_tick(fraction: float) -> int:
+    """Inverse of :func:`throttle_fraction`, clamped to 0..1."""
+    lo, hi = us_to_tick(US_MIN), us_to_tick(US_MAX)
+    return clamp_tick(round(lo + max(0.0, min(1.0, fraction)) * (hi - lo)))
+
+
 # ── Deflection ────────────────────────────────────────────────────────────────
 # "Deflection" is normalised stick position in [-1, 1], where 0 is centre.
 
