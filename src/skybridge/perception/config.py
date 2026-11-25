@@ -17,6 +17,7 @@ from typing import Any
 import yaml
 
 from ..config import ConfigError
+from .plate import PlateParams
 
 
 @dataclass(frozen=True)
@@ -101,6 +102,7 @@ class PerceptionConfig:
     camera: CameraConfig = field(default_factory=CameraConfig)
     viewer: ViewerConfig = field(default_factory=ViewerConfig)
     link: LinkConfig = field(default_factory=LinkConfig)
+    plate: PlateParams = field(default_factory=PlateParams)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> PerceptionConfig:

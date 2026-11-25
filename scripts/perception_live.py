@@ -111,7 +111,7 @@ def main() -> None:
         source = RrdReplaySource(args.replay, realtime=True)
     else:
         source = RealSenseSource(cfg.camera)
-    pipeline = DepthPipeline(params, source.camera)
+    pipeline = DepthPipeline(params, source.camera, cfg.plate)
 
     # Subscribed first, so the estimate leaves before anything slower runs.
     bus = Bus()

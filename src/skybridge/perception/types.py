@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from .plate import PlateMeasurement
 
 Vec3 = tuple[float, float, float]
 
@@ -57,6 +60,8 @@ class DroneEstimate:
     pos_std: Vec3 | None = None # 1-sigma position uncertainty from the filter
     since_update: float | None = None  # seconds since a detection updated the filter
     reason: str = ""            # why this frame was or wasn't associated
+    plate_yaw: float | None = None    # deg, this frame's plate (see perception.plate)
+    plate_elong: float | None = None  # how clearly the plate showed as a line: confidence
 
     def at(self, now: float, max_ahead: float = 0.2) -> Vec3 | None:
         """Position projected to `now` at constant velocity, or None if invalid.
@@ -110,4 +115,5 @@ class PerceptionResult:
     filtered: np.ndarray | None = None  # filter position after this frame, world
     velocity: np.ndarray | None = None  # filter velocity after this frame, world
     output: np.ndarray | None = None    # smoothed position after this frame, world
+    plate: PlateMeasurement | None = None  # the plate on this frame, if measured
     diag: dict[str, Any] = field(default_factory=dict)  # see detector.REASONS

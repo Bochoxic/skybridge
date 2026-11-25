@@ -6,22 +6,28 @@ No threads, no I/O, no clock: everything time-related comes from the frame.
     foreground  pixels in front of that background
     crop        3D points inside the flight volume
     track       cluster, associate, filter
+    plate       the drone's yaw from the plate on top, on detected frames
 """
 
 from __future__ import annotations
+
+from dataclasses import replace
 
 import numpy as np
 
 from .background import DepthBackground
 from .config import PipelineParams
 from .geometry import BackProjector, camera_to_world, crop_box
+from .plate import PlateParams, measure_plate
 from .tracker import Tracker
 from .types import CameraModel, DepthFrame, DroneEstimate, PerceptionResult
 
 
 class DepthPipeline:
-    def __init__(self, params: PipelineParams, camera: CameraModel) -> None:
+    def __init__(self, params: PipelineParams, camera: CameraModel,
+                 plate: PlateParams = PlateParams()) -> None:
         self.params = params
+        self.plate = plate
         self.camera = camera
         self.project = BackProjector(camera.intrinsics, camera.depth_scale, params.stride)
         self.box = (np.array([params.x_min, params.y_min, params.z_min]),
@@ -46,10 +52,19 @@ class DepthPipeline:
         cluster, status, n_clusters, centroid, world_pos, detected = \
             self.tracker.step(frame.t, cropped)
 
+        estimate = self.tracker.estimate(frame.t, frame.seq, status)
+        plate = None
+        if detected and self.plate.enabled:
+            plate = measure_plate(frame.depth, self.camera, self.cam_R, self.cam_t,
+                                  world_pos, self.plate)
+            if plate is not None:
+                estimate = replace(estimate, plate_yaw=float(plate.yaw_deg),
+                                   plate_elong=float(plate.elong))
+
         kf = self.tracker.kf
         return PerceptionResult(
             frame=frame,
-            estimate=self.tracker.estimate(frame.t, frame.seq, status),
+            estimate=estimate,
             foreground=fg,
             cropped=cropped,
             cluster=cluster,
@@ -61,6 +76,7 @@ class DepthPipeline:
             filtered=None if kf.x is None else kf.x[:3].copy(),
             velocity=None if kf.x is None else kf.x[3:].copy(),
             output=self.tracker.output(),
+            plate=plate,
             diag=self.tracker.diag,
         )
 

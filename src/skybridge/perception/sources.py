@@ -215,6 +215,36 @@ def iter_depth_frames(rrd_path: str | Path) -> Iterator[tuple[float, float, np.n
             yield wall[i], sensor[i], depth.reshape(fmt["height"], fmt["width"])
 
 
+def _load_with_progress(
+    frames: Iterable[tuple[float, float, np.ndarray]], total: int | None
+) -> list[tuple[float, float, np.ndarray]]:
+    """Drain `frames` into a list, printing progress as it goes.
+
+    Decoding a full-resolution recording is much slower than real time (see
+    `RrdReplaySource`), so loading thousands of frames can take a while with
+    no feedback otherwise. `total`, when known, turns that into a percentage
+    and an ETA instead of just a running count.
+    """
+    loaded: list[tuple[float, float, np.ndarray]] = []
+    start = last_print = time.monotonic()
+    for i, item in enumerate(frames, 1):
+        loaded.append(item)
+        now = time.monotonic()
+        if now - last_print >= 0.5:
+            rate = i / (now - start)
+            if total:
+                left = (total - i) / rate if rate > 0 else 0
+                print(f"\r  loading depth: {i}/{total} ({100 * i / total:.0f}%), "
+                      f"{rate:.0f} fps, ~{left:.0f}s left     ", end="", flush=True)
+            else:
+                print(f"\r  loading depth: {i} frames, {rate:.0f} fps     ", end="", flush=True)
+            last_print = now
+    if loaded:
+        print(f"\r  loaded {len(loaded)} depth frames in {time.monotonic() - start:.1f}s"
+              + " " * 20)
+    return loaded
+
+
 class RrdReplaySource:
     """Frames from a ``.rrd`` recording with its JSON sidecar.
 
@@ -244,7 +274,10 @@ class RrdReplaySource:
         self._next = 0
         frames = islice(iter_depth_frames(path), max_frames or None)
         self._iter = iter(frames)
-        self._loaded = list(frames) if realtime else []
+        total = self.meta.get("frames_logged", {}).get("depth")
+        if max_frames:
+            total = min(total, max_frames) if total else max_frames
+        self._loaded = _load_with_progress(frames, total) if realtime else []
 
     @property
     def alive(self) -> bool:

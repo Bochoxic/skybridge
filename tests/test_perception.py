@@ -114,6 +114,17 @@ def test_wire_round_trip():
     assert DroneEstimate.from_wire(e.to_wire()) == e
     invalid = estimate(valid=False, pos=None, vel=None, pos_std=None, since_update=None)
     assert DroneEstimate.from_wire(invalid.to_wire()) == invalid
+    with_plate = estimate(plate_yaw=-12.5, plate_elong=80.0)
+    assert DroneEstimate.from_wire(with_plate.to_wire()) == with_plate
+
+
+def test_wire_without_plate_fields_still_parses():
+    import json
+
+    raw = json.loads(estimate().to_wire())
+    del raw["plate_yaw"], raw["plate_elong"]
+    e = DroneEstimate.from_wire(json.dumps(raw).encode())
+    assert e.plate_yaw is None and e.pos == (1.0, 2.0, 3.0)
 
 
 @pytest.mark.parametrize("data", [b"", b"not json", b"[1, 2]", b'{"v": 99}', b'{"v": 1, "t": 1}'])
@@ -358,6 +369,28 @@ def test_recorded_session_saves_rc_and_telemetry_to_a_file(tmp_path, monkeypatch
             "/log/association"} <= entities
 
 
+def test_recorded_session_saves_the_heading(tmp_path, monkeypatch):
+    import rerun.chunk as rrc
+
+    from skybridge.heading import TOPIC, HeadingEstimate
+
+    monkeypatch.setattr(session_module, "LOG_DIR", tmp_path)
+    bus = Bus()
+    drone = DroneConfig.from_dict({"modes": {"arm": {"aux": 1, "range": [1700, 2100]}}})
+    session = PerceptionSession(bus, drone, viewer=False, record=True)
+    session._start_logging()
+    bus.publish(TOPIC, HeadingEstimate(1.0, 5.0, 3.0, offset_deg=2.0, drift_dps=0.1), 1.0)
+    bus.publish(TOPIC, HeadingEstimate(1.05, 5.0, 3.0, plate_deg=6.0, plate_used=True), 1.05)
+    bus.publish(TOPIC, HeadingEstimate(1.1, 5.0, 3.0, plate_deg=60.0), 1.1)  # an outlier
+    bus.publish(TOPIC, HeadingEstimate(1.2, None, None, plate_deg=4.0), 1.2)  # before arm
+    session.close()
+
+    path = tmp_path / f"{session.run_id}_flight.rrd"
+    entities = {c.entity_path for c in rrc.RrdReader(str(path)).stream() if not c.is_static}
+    assert {"/plots/heading/fused", "/plots/heading/fc", "/plots/heading/plate",
+            "/plots/heading/plate_ignored", "/plots/heading_drift"} <= entities
+
+
 def test_viewer_stream_does_not_get_states_twice():
     logged = []
     bus = Bus()
@@ -432,7 +465,7 @@ def test_live_view_sends_far_fewer_entities(tmp_path):
     lean, static = logged_entities(tmp_path, False)
     assert len(lean) * 2 < len(full)
     assert lean == {"/world/filtered", "/world/trail/filtered", "/plots/position",
-                    "/plots/velocity", "/log/association"}
+                    "/plots/velocity", "/log/association", "/world/plate/outline"}
     assert "/world/camera/background" in static
 
 
