@@ -71,7 +71,7 @@ rc:
 control:
   controllers:
     altitude_hold:                            # a name in skybridge.control.CONTROLLERS
-      switch: {aux: 3, range: [1700, 2100]}   # CH7 high. No Betaflight mode may use AUX3
+      switch: {aux: 3, range: [1300, 1700]}   # CH7 middle. No Betaflight mode may use AUX3
       axes: [throttle]                        # the only channels it may drive
       require_mode: angle                     # refused, or drops out, in any other mode
       stick_override: 0.5                    # moving the stick this far hands control back
@@ -86,3 +86,25 @@ control:
         max_age: 0.2            # seconds; estimate older than this drops out
         max_since_update: 0.2   # seconds of coasting tolerated
         max_error: 0.5          # metres from the target; beyond this drops out
+
+    # Altitude hold by a policy trained in simulation (uav_reinforcement_learning_control,
+    # `train.py --task althold`, then `export_policy.py <run> -o ~/skybridge/models/althold_policy.npz`).
+    # CH7 high; CH7 middle is the PID hold above, so flipping up goes off -> PID -> policy
+    # and flipping down from the policy lands on the PID first. --control loads every
+    # controller here and refuses to start if the bundle is missing: comment this out to
+    # fly with the PID alone.
+    altitude_policy:
+      switch: {aux: 3, range: [1700, 2100]}   # CH7 high
+      axes: [throttle]
+      require_mode: angle
+      stick_override: 0.3                    # throttle stick moved this far hands control back
+      shadow: altitude_hold                  # runs alongside the PID (CH7 middle), output shown
+                                             # as [shadow ALT-RL ...] and logged, never sent
+      params:
+        policy: models/althold_policy.npz    # relative to the repo root
+        camera_timeout: 1.0     # s without a new detection -> see on_timeout
+        on_timeout: zero        # zero: throttle 0 until CH7 is cycled. pilot: hand the stick back
+        min_engage_throttle: 0.15
+        max_engage_climb: 0.5   # m/s; the policy was trained engaging at up to 0.5
+        max_engage_age: 0.2     # s; the estimate must be this fresh to engage
+        max_error: 0.6          # m from the target; beyond this hands the stick back

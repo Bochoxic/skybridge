@@ -27,7 +27,7 @@ Usage:
     python scripts/rc_fly.py --dry-run              # no TX: show what would be sent
     python scripts/rc_fly.py                        # live, full throttle range
     python scripts/rc_fly.py --max-throttle 0.5
-    python scripts/rc_fly.py --perception           # + live tracking and viewer
+    python scripts/rc_fly.py --perception           # + live tracking, heading and viewer
     python scripts/rc_fly.py --perception --control # + controllers, e.g. altitude hold
 
 With --perception, wait for the status line to leave "VIS warmup" before
@@ -69,9 +69,17 @@ def control_text(st: PassthroughStatus) -> str:
     for c in st.control:
         if c.engaged:
             parts.append(c.text or c.name)
+        elif c.shadow or c.text.startswith("shadow"):
+            parts.append(f"[{c.text}]")     # running alongside, not flying
         elif c.note:
             parts.append(f"{c.name} off: {c.note}")
     return " ".join(parts)
+
+
+def heading_text(heading) -> str:
+    """The fused heading for the status line, or empty before arming."""
+    est = heading.latest if heading is not None else None
+    return "" if est is None else f"HDG {est.heading_deg:+4.0f}"
 
 
 def status_line(
@@ -143,6 +151,14 @@ def main() -> None:
         session = PerceptionSession(bus, cfg, viewer=not args.no_viewer, record=args.record,
                                     replay=args.replay, color=args.color)
 
+    heading = None
+    if args.perception and "arm" in cfg.modes:
+        from skybridge.heading import HeadingTracker
+
+        # FC yaw corrected by the camera's view of the plate: viewer, status line, logs.
+        heading = HeadingTracker(bus, cfg.modes["arm"])
+        heading.start()
+
     source = JoystickSource(args.device or cfg.rc.device, bus=bus)
     print(source)
 
@@ -192,7 +208,7 @@ def main() -> None:
         refresh = session is not None and time.monotonic() >= vis_due[0]
         if refresh:
             vis_due[0] = time.monotonic() + VIS_REFRESH
-            vis_text[0] = session.status_text()
+            vis_text[0] = " ".join(filter(None, (session.status_text(), heading_text(heading))))
         # The numbers can wait for the refresh; engaging or dropping out cannot.
         key = tuple((c.name, c.engaged, c.note) for c in st.control)
         if refresh or key != ctl_key[0]:
@@ -212,6 +228,8 @@ def main() -> None:
         pass
     finally:
         source.close()
+        if heading is not None:
+            heading.close()
         if session is not None:
             session.close()
         print("\nstopped, disarmed.")

@@ -307,7 +307,7 @@ over throttle only, so roll, pitch and yaw stay on the sticks.
    while plugged in can't be detected yet**, and a frozen switch keeps holding.
 
 **To use it:** hover in Angle mode with a confirmed track (`VIS ... detected`),
-hold steady, then flip CH7 high. The target is your height at that moment and
+hold steady, then flip CH7 to the middle. The target is your height at that moment and
 the throttle baseline is your stick at that moment, so hover first. Keep the
 stick about where it was: it is what you get back when the hold ends.
 
@@ -344,18 +344,108 @@ throttle a lot. With `--record`, or the viewer open,
 **Trying a controller on a recorded flight:** `control_replay.py` runs the
 real controller over a flight log from `--perception --record`, with the median
 airborne height as the target and the median throttle as the trim, and compares
-its output with what you flew.
+its output with what you flew. It replays every controller under
+`control.controllers` by default, on the same data, so the PID `altitude_hold`
+and the trained `altitude_policy` can be compared side by side. Pick some
+with `--controller` (repeatable). `--set kp=0.12` applies to every controller,
+and `--set altitude_policy.on_timeout=pilot` to one only.
 
 ```bash
 uv run python scripts/control_replay.py                     # newest log, opens Rerun
 uv run python scripts/control_replay.py --set kp=0.12 --set max_error=2
 uv run python scripts/control_replay.py data/live/<run>_flight.rrd --setpoint 0.3
+uv run python scripts/control_replay.py --controller altitude_hold --controller altitude_policy \
+    --set altitude_policy.on_timeout=pilot      # PID vs policy on the same flight
 ```
+
+For `altitude_policy`, replay with `on_timeout=pilot`. With the default
+`zero`, the first camera gap of more than 1 s latches the throttle at 0 for the
+rest of the log, and the script says so.
 
 It is **open loop**: the recorded drone flew on your sticks, so the output
 never changes the height the controller sees next. Use it to check reactions to
 real height, noise and track loss, and to compare gains. It can't show
 stability, so a stable-looking replay is no promise about the real loop.
+
+### Altitude hold by a trained policy
+
+`altitude_policy` (`src/skybridge/control/policy.py`) holds height like
+`altitude_hold`, but its throttle comes from a neural network trained in
+simulation in `uav_reinforcement_learning_control` (`train.py --task althold`).
+Roll, pitch and yaw stay on the sticks. The policy is told the sticks, because
+in angle mode they say how far the drone is about to tilt, and so how much more
+throttle it will need. It never sees telemetry attitude.
+
+**Getting a policy onto the laptop.** In the uav repo, export the trained run
+to a numpy bundle (no torch needed here):
+
+```bash
+python export_policy.py models_trained/air65_althold_<stamp> -o ~/skybridge/models/althold_policy.npz
+```
+
+The `altitude_policy` entry in `configs/drone.yaml` sits on CH7 **high**, and
+the PID `altitude_hold` on CH7 **middle**. Flipping up goes off → PID → policy,
+and flipping down from the policy lands on the PID first, so the PID is always
+one position away. Run with `--control` as above. If the bundle is missing,
+`--control` refuses to start; comment the entry out to fly with the PID alone.
+
+**Checks at startup.** `--control` refuses to start if:
+
+| Error | Meaning |
+|---|---|
+| `... not found` | No bundle at `params.policy` (relative to the repo root) |
+| `does not reproduce the simulator` | The bundle carries episodes recorded in the simulator. Replayed through the observer and network here, they came out different. Re-export the policy, or bring `control/policy.py` in step with `envs/althold_env.py` |
+| `trained for angle_limit ...`, `... deg/s full yaw`, `trained at ... Hz` | The stick scaling or RC rate in `drone.yaml` differs from the one the policy was trained with |
+
+**Shadow mode.** While the PID flies (CH7 middle), the policy runs alongside
+it on the same data (`shadow: altitude_hold` in its entry), and its throttle is
+never sent. The status line shows both:
+
+    ALT 0.90>1.00m T30% [shadow ALT-RL 0.90>1.00m T42%]
+
+The bracket is what the policy would send if you flipped CH7 high at that
+moment. While shadowing, the policy is told the throttle actually sent, the
+PID's, so its history is the real one. With `--record` or the viewer open,
+`plots/control/altitude_policy` logs it every tick, next to
+`plots/control/altitude_hold`. There, `sent` is the throttle actually sent,
+`throttle` is the policy's, and `shadow` is 1 while it is not flying. If it
+refuses or drops out, the bracket says `shadow off: <reason>` and it tries
+again on the next tick; that never affects the PID. Remove the `shadow` line to
+switch this off.
+
+**To use it:** hover in Angle mode with a confirmed track, flip CH7 to the
+middle (PID hold), let it settle, then flip CH7 high. Watch the shadow bracket first: if its throttle stays close to
+the PID's and moves smoothly, the hand-over will be smooth too. Note that
+flipping to the policy sets a new target, the height at that moment, not the
+PID's target. The target is your height at that moment. The policy starts from your
+throttle and quickly finds its own hover, so your stick position matters less
+than with the PID. Fly roll, pitch and yaw as usual.
+
+It refuses to engage unless all of these hold: armed, Angle mode, track
+`detected` and under 0.2 s old, throttle above 15%, and climb rate under 0.5 m/s.
+
+While engaged:
+
+| Status line | What happens |
+|---|---|
+| `ALT-RL 1.18>1.20m T32%` | Holding: height, target, throttle sent |
+| `ALT-RL NO CAMERA 1.0s T0%` | No new detection for `camera_timeout`: **throttle 0** until CH7 is cycled (`on_timeout: zero`). With `on_timeout: pilot` the stick is handed back instead |
+| `throttle stick moved` | You moved the throttle stick more than 30% of its travel: the stick is yours again |
+| `height error +0.62 m` | More than `max_error` from the target: the stick is yours again |
+| `left angle mode`, `disarmed` | As for `altitude_hold` |
+
+It holds the last real detection while the tracker coasts, and does not use the
+tracker's prediction. This is how the simulator trained it: the policy sees how
+old its altitude is, and was trained through camera outages of up to 0.5 s.
+
+**Keep the throttle stick near hover while it flies.** It is what you get back
+when you cycle CH7, or when a stick move or a height error hands control back.
+After a camera timeout, flip CH7 down to the middle at once: the PID takes over
+if the track is back, and otherwise it refuses and you get your stick.
+
+With `--record` or the viewer open, `plots/control/altitude_policy` shows
+setpoint, z, climb rate, the observer's integral, data age, the raw action and
+throttle.
 
 **Adding a controller:** write a class with `name`, `axes`, `engage()` and
 `update()` (see `src/skybridge/control/base.py`), add it to `CONTROLLERS` in
@@ -363,6 +453,42 @@ stability, so a stable-looking replay is no promise about the real loop.
 its own switch range and allowed axes. Two controllers can't share a switch
 range, and two on different switches can't share an axis; config loading
 rejects both.
+
+### Heading
+
+With `--perception`, the drone's heading in the camera frame is estimated
+live and shown in the viewer's **heading** plot and on the status line
+(`HDG +12`). Convention: **0 = the plate on top of the drone parallel to the
+camera's image, + = yawed left, − = yawed right.**
+
+It combines two measurements:
+
+- **FC yaw** (Betaflight's attitude telemetry) follows fast turns, but its
+  gyro bias makes it drift, about 0.5°/s on this drone.
+- **The plate**, seen in the depth image, doesn't drift but is noisy and
+  only known modulo 180°.
+
+A Kalman filter (`src/skybridge/heading.py`) runs FC yaw through an offset
+and a drift rate that each plate frame corrects. The plot shows:
+
+| Series | What |
+|---|---|
+| `fused` (gold) | The heading estimate |
+| `-(FC yaw - FC yaw at arm)` (blue) | FC yaw alone, same convention |
+| `plate` (magenta dots) | Each plate frame, unwrapped next to the estimate |
+| `plate, ignored` (gray dots) | Plate frames more than 3σ off, not used |
+
+`heading drift` plots the learned FC drift rate. The 3D view draws the
+fitted plate as a magenta rectangle; with `viewer.detail` on, also the plate
+points (green) and the rest of the drone (gray).
+
+**Arm with the plate parallel to the camera**: the heading starts at 0 at
+every arm. Armed at an angle, the plate corrects it within a second or two,
+provided it's less than 90° off. Beyond that, front and back are swapped.
+
+Tuning lives in `HeadingParams` (`heading.py`) and the plate measurement in
+the `plate:` section of `configs/perception.yaml` (`enabled`, `window`,
+`depth_gate`, `radius`, `split_margin`, `min_points`, `min_plate_points`).
 
 ## `perception_live.py` — live detection and tracking
 

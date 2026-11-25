@@ -517,9 +517,16 @@ def test_status_can_be_logged_to_rerun(tmp_path):
 def test_real_config_loads_and_builds():
     from pathlib import Path
 
-    cfg = DroneConfig.from_yaml(Path(__file__).parent.parent / "configs" / "drone.yaml")
+    root = Path(__file__).parent.parent
+    cfg = DroneConfig.from_yaml(root / "configs" / "drone.yaml")
+    # CH7: middle the PID hold, high the trained policy (one position past the PID).
+    switches = {n: c.switch.range_us for n, c in cfg.control.controllers.items()}
+    assert switches == {"altitude_hold": (1300, 1700), "altitude_policy": (1700, 2100)}
+    policy = cfg.control.controllers["altitude_policy"].params["policy"]
+    if not (root / policy).exists():
+        pytest.skip(f"no exported policy at {policy}")
     supervisor = build_supervisor(cfg, lambda: None)
-    assert [c.name for c in supervisor.status] == ["altitude_hold"]
+    assert [c.name for c in supervisor.status] == ["altitude_hold", "altitude_policy"]
 
 
 # ── Units ─────────────────────────────────────────────────────────────────────

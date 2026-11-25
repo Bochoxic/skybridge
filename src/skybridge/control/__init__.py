@@ -10,11 +10,13 @@ from ..config import ConfigError, DroneConfig
 from ..state import TelemetryState, Timestamped
 from .altitude import AltitudeHold, AltitudeHoldParams
 from .base import ControlContext, Controller, ControlOutput, Disengage, Sticks
+from .policy import PolicyAltitudeHold, PolicyAltitudeHoldParams
 from .supervisor import ControlStatus, ControlSupervisor
 
 # Name in configs/drone.yaml -> factory taking that entry's params dict.
 CONTROLLERS: dict[str, Callable[[dict[str, Any]], Controller]] = {
     AltitudeHold.name: AltitudeHold.from_params,
+    PolicyAltitudeHold.name: PolicyAltitudeHold.from_params,
 }
 
 
@@ -35,7 +37,11 @@ def build_supervisor(
         if factory is None:
             known = ", ".join(sorted(CONTROLLERS))
             raise ConfigError(f"unknown controller {name!r}; known: {known}")
-        controllers[name] = factory(entry.params)
+        controller = factory(entry.params)
+        # Optional: a controller that depends on the drone's settings checks them here.
+        if check := getattr(controller, "check_config", None):
+            check(config)
+        controllers[name] = controller
     return ControlSupervisor(config, controllers, estimates, telemetry, bus=bus)
 
 
@@ -49,6 +55,8 @@ __all__ = [
     "ControlSupervisor",
     "Controller",
     "Disengage",
+    "PolicyAltitudeHold",
+    "PolicyAltitudeHoldParams",
     "Sticks",
     "build_supervisor",
 ]

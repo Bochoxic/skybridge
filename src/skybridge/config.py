@@ -154,6 +154,8 @@ class ControllerConfig:
     require_mode: str                   # flight mode it may run in
     stick_override: float = 0.15        # stick travel that hands control back
     params: dict = field(default_factory=dict)
+    shadow: str | None = None           # while this controller flies, run alongside it
+                                        # with the output shown and logged, never sent
 
 
 @dataclass(frozen=True)
@@ -274,6 +276,9 @@ class DroneConfig:
                 )
             if not 0.0 < ctl.stick_override <= 1.0:
                 raise ConfigError(f"{label}: stick_override must be in (0, 1]")
+            if ctl.shadow is not None and (ctl.shadow == name or ctl.shadow not in controllers):
+                raise ConfigError(f"{label}: shadow must name another controller, "
+                                  f"got {ctl.shadow!r}")
 
         for (name_a, a), (name_b, b) in combinations(controllers.items(), 2):
             if a.switch.channel == b.switch.channel:
@@ -402,7 +407,7 @@ def _parse_controller(name: str, spec: dict) -> ControllerConfig:
     required = {"switch", "axes", "require_mode"}
     if missing := required - set(spec):
         raise ConfigError(f"{label}: missing {sorted(missing)}")
-    if unknown := set(spec) - required - {"stick_override", "params"}:
+    if unknown := set(spec) - required - {"stick_override", "params", "shadow"}:
         raise ConfigError(f"{label}: unknown keys {sorted(unknown)}")
     if not isinstance(spec["axes"], list):
         raise ConfigError(f"{label}: axes must be a list, e.g. [throttle]")
@@ -412,4 +417,5 @@ def _parse_controller(name: str, spec: dict) -> ControllerConfig:
         require_mode=spec["require_mode"],
         stick_override=spec.get("stick_override", ControllerConfig.stick_override),
         params=dict(spec.get("params") or {}),
+        shadow=spec.get("shadow"),
     )

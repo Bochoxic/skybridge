@@ -10,6 +10,11 @@ rules are the same for all of them:
   did not ask for is the failure this rule exists to prevent.
 * Any drop-out returns the pilot's sticks in the same tick.
 * Nothing a controller does can stop the RC stream.
+
+A controller whose config says ``shadow: <other>`` also runs while that other
+one flies: engaged on the same tick, updated every tick after the real output
+is decided, its text and debug published with ``shadow=True``, and its output
+never written. It shows what it would do before the pilot hands it control.
 """
 
 from __future__ import annotations
@@ -46,6 +51,7 @@ class ControlStatus:
     note: str = ""      # why it isn't running, when the pilot needs to know
     text: str = ""      # the controller's own status while running
     debug: Mapping[str, float] = field(default_factory=dict)
+    shadow: bool = False  # running alongside another controller; output not sent
 
 
 @dataclass
@@ -58,9 +64,12 @@ class _Slot:
     text: str = ""
     debug: Mapping[str, float] = field(default_factory=dict)
     engage_sticks: Sticks = field(default_factory=Sticks)
+    name: str = ""
+    shadowing: bool = False
 
     def status(self) -> ControlStatus:
-        return ControlStatus(self.controller.name, self.engaged, self.note, self.text, self.debug)
+        return ControlStatus(self.controller.name, self.engaged, self.note, self.text,
+                             self.debug, self.shadowing)
 
 
 class ControlSupervisor:
@@ -91,7 +100,7 @@ class ControlSupervisor:
                     f"controller {name!r} drives {sorted(extra)}, "
                     f"but its config only allows {sorted(ctl.axes)}"
                 )
-            self._slots.append(_Slot(controller, ctl))
+            self._slots.append(_Slot(controller, ctl, name=name))
         self.status: tuple[ControlStatus, ...] = tuple(s.status() for s in self._slots)
 
     def apply(
@@ -145,7 +154,40 @@ class ControlSupervisor:
         for slot in self._slots:
             if slot.engaged:
                 self._run(slot, ctx, out, ceiling)
+        flying = {s.name for s in self._slots if s.engaged}
+        for slot in self._slots:
+            self._shadow(slot, ctx, out, flying)
         return out
+
+    def _shadow(self, slot: _Slot, ctx: ControlContext, sent: list[int], flying: set) -> None:
+        """Run `slot` alongside the controller it shadows. Never touches `sent`."""
+        if slot.engaged or slot.config.shadow not in flying:
+            if slot.shadowing:
+                slot.shadowing = False
+                if not slot.engaged:
+                    slot.text, slot.debug = "", {}
+            return
+        controller = slot.controller
+        try:
+            if not slot.shadowing:
+                controller.engage(ctx)
+                slot.shadowing = True
+            update = getattr(controller, "shadow_update", None)
+            if update is not None:
+                output = update(ctx, throttle_fraction(sent[self._config.channels.throttle]))
+            else:
+                output = controller.update(ctx)
+        except Disengage as exc:
+            slot.shadowing = False
+            slot.text, slot.debug = f"shadow off: {exc}", {}
+            return
+        except Exception:
+            log.exception("controller %s failed in shadow", controller.name)
+            slot.shadowing = False
+            slot.text, slot.debug = f"shadow off: {FAULT}", {}
+            return
+        slot.text = f"shadow {output.text}"
+        slot.debug = {**output.debug, "shadow": 1.0}
 
     def _sticks(self, ticks: Sequence[int]) -> Sticks:
         cm = self._config.channels
@@ -198,6 +240,7 @@ class ControlSupervisor:
             self._drop(slot, reason)
             return
         slot.engaged = True
+        slot.shadowing = False
         slot.note = ""
         slot.engage_sticks = ctx.sticks
 
@@ -253,6 +296,6 @@ class ControlSupervisor:
         for status in self.status:
             previous = self._published.get(status.name)
             # Every tick while running, for the plots; otherwise only on a change.
-            if status.engaged or status != previous:
+            if status.engaged or status.shadow or status != previous:
                 self._published[status.name] = status
                 self._bus.publish(TOPIC, status, self._last_t)

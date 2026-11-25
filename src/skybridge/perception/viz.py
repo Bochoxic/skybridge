@@ -63,7 +63,14 @@ def make_blueprint(trail_seconds, *, live=False, color=False, detail=True, depth
     images = [rrb.Spatial2DView(name="depth", origin="camera/depth")] if depth else []
     if live:
         plots += [rrb.TimeSeriesView(name="rc (us)", origin="plots/rc"),
+                  # One line per controller, flying or in shadow: e.g. the PID's throttle
+                  # next to what the policy would send.
+                  rrb.TimeSeriesView(name="throttle by controller",
+                                     origin="plots/control_throttle"),
                   rrb.TimeSeriesView(name="control", origin="plots/control"),
+                  rrb.TimeSeriesView(name="heading (deg, 0 = plate parallel, + = left)",
+                                     origin="plots/heading"),
+                  rrb.TimeSeriesView(name="heading drift (deg/s)", origin="plots/heading_drift"),
                   rrb.TimeSeriesView(name="attitude", origin="plots/telemetry/attitude"),
                   rrb.TimeSeriesView(name="battery", origin="plots/telemetry/battery"),
                   rrb.TimeSeriesView(name="link", origin="plots/telemetry/link_stats")]
@@ -228,6 +235,24 @@ class RerunSink:
         else:
             self._log_transition(res)
         self._log_track(res)
+        self._log_plate(res)
+
+    def _log_plate(self, res: PerceptionResult):
+        """The fitted plate as a rectangle; with detail, also its points and the body's."""
+        paths = ("world/plate/outline",) + (
+            ("world/plate/points", "world/plate/body") if self.detail else ())
+        m = res.plate
+        if m is None:
+            for path in paths:
+                self._clear(path)
+            return
+        self._log("world/plate/outline", rr.LineStrips3D(
+            [m.outline()], radii=0.003, colors=[255, 0, 255]))
+        if self.detail:
+            self._log("world/plate/points", rr.Points3D(m.plate, radii=0.003,
+                                                         colors=[40, 220, 60]))
+            self._log("world/plate/body", rr.Points3D(m.body, radii=0.003,
+                                                       colors=[150, 150, 150]))
 
     def _log_transition(self, res: PerceptionResult):
         """One line each time the status or reason changes, not one per frame."""
@@ -392,8 +417,9 @@ class RerunBusSink:
         log_fn: Callable[[str, Any, float], None] | None = None,
         log_estimates: bool = False,
     ) -> None:
-        self._topics = ("rc/sent", "telemetry/", "control/status") + (
+        self._topics = ("rc/sent", "telemetry/", "control/status", "heading/") + (
             (ESTIMATE_TOPIC,) if log_estimates else ())
+        self._heading_styled = False
         self._last_control: dict[str, tuple[bool, str]] = {}
         self._last_status: tuple[str, str] | None = None
         self._last_pos: list[float] | None = None
@@ -456,6 +482,9 @@ class RerunBusSink:
         if topic == "control/status":
             self._log_control(payload)
             return
+        if topic.startswith("heading/"):
+            self._log_heading(payload)
+            return
         if "mode" in payload:
             rr.log("log/flight_mode", rr.TextLog(payload["mode"]), recording=self._rec)
         numeric = {k: v for k, v in payload.items() if not isinstance(v, (str, bool))}
@@ -476,6 +505,34 @@ class RerunBusSink:
         if status.debug:  # one entity: cheaper, and setpoint and z share a plot
             self._log_series(f"plots/control/{status.name}", list(status.debug),
                              list(status.debug.values()))
+            if "throttle" in status.debug:
+                self._log_series(f"plots/control_throttle/{status.name}", [status.name],
+                                 [status.debug["throttle"]])
+
+    def _log_heading(self, e: Any) -> None:
+        """Fused heading and FC yaw on each FC update; each plate frame as a dot."""
+        if not self._heading_styled:
+            self._heading_styled = True
+            for path, archetype in (
+                    ("plots/heading/fused", rr.SeriesLines(colors=[255, 215, 0], names="fused",
+                                                           widths=2)),
+                    ("plots/heading/fc", rr.SeriesLines(colors=[80, 160, 255],
+                                                        names="-(FC yaw - FC yaw at arm)")),
+                    ("plots/heading/plate", rr.SeriesPoints(colors=[255, 0, 255], names="plate",
+                                                            marker_sizes=1.5)),
+                    ("plots/heading/plate_ignored", rr.SeriesPoints(
+                        colors=[140, 140, 140], names="plate, ignored", marker_sizes=1.5))):
+                rr.log(path, archetype, static=True, recording=self._rec)
+        if e.plate_deg is not None:
+            ignored = e.heading_deg is not None and not e.plate_used
+            rr.log("plots/heading/plate_ignored" if ignored else "plots/heading/plate",
+                   rr.Scalars([e.plate_deg]), recording=self._rec)
+            return
+        if e.heading_deg is None:
+            return
+        rr.log("plots/heading/fused", rr.Scalars([e.heading_deg]), recording=self._rec)
+        rr.log("plots/heading/fc", rr.Scalars([e.fc_deg]), recording=self._rec)
+        self._log_series("plots/heading_drift", ["drift"], [e.drift_dps])
 
     def _log_estimate(self, e: Any) -> None:
         """The drone's state, on the same paths as the live view."""
